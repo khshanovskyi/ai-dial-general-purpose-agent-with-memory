@@ -35,7 +35,7 @@ class MemoryStoreTool(BaseTool):
 
     @property
     def name(self) -> str:
-        return "memory_tool"
+        return "memory_store_tool"
 
     @property
     def description(self) -> str:

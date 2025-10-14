@@ -29,7 +29,7 @@ class MemorySearchTool(BaseTool):
 
     @property
     def name(self) -> str:
-        return "memory_tool"
+        return "memory_search_tool"
 
     @property
     def description(self) -> str:
