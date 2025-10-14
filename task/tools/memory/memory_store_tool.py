@@ -7,22 +7,15 @@ from task.tools.base import BaseTool
 from task.tools.memory.memory_store import MemoryStore
 from task.tools.models import ToolCallParams
 
-_DESCRIPTION = """Store or search long-term memories that persist across conversations.
+_DESCRIPTION = """Store long-term memories that persist across conversations.
 
-Use this tool to:
-1. STORE: Save important information for future reference (user preferences, facts, context)
-2. SEARCH: Find relevant memories from past conversations
+Use this tool to save important information for future reference (user preferences, facts, context)
 
 When to store memories:
 - User shares personal information (preferences, background, goals)
 - Important facts or decisions that should be remembered
 - Context that would be useful in future conversations
 - User explicitly asks to remember something
-
-When to search memories:
-- At the start of conversations to recall relevant context
-- When user references past interactions
-- When making personalized recommendations
 
 Importance levels:
 - 1.0: Critical information (user's name, core preferences)
@@ -31,9 +24,9 @@ Importance levels:
 """
 
 
-class MemoryTool(BaseTool):
+class MemoryStoreTool(BaseTool):
     """
-    Tool for storing and retrieving long-term memories.
+    Tool for storing long-term memories.
     Allows the agent to remember information across conversations.
     """
 
