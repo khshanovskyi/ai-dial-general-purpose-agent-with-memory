@@ -75,7 +75,6 @@ class StoreMemoryTool(BaseTool):
 
         result = await self.memory_store.add_memory(
                 api_key=tool_call_params.api_key,
-                conversation_id=tool_call_params.conversation_id,
                 content=content,
                 importance=importance,
                 category=category,

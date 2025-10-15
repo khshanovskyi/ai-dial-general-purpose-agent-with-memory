@@ -42,7 +42,6 @@ class DeleteMemoryTool(BaseTool):
 
         result = await self.memory_store.delete_all_memories(
             api_key=tool_call_params.api_key,
-            conversation_id=tool_call_params.conversation_id
         )
         tool_call_params.stage.append_content(result)
 

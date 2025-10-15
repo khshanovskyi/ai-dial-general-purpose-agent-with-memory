@@ -57,7 +57,6 @@ class SearchMemoryTool(BaseTool):
 
         results: list[MemoryData] = await self.memory_store.search_memories(
             api_key=tool_call_params.api_key,
-            conversation_id=tool_call_params.conversation_id,
             query=query,
             top_k=top_k
         )

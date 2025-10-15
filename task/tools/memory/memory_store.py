@@ -19,25 +19,24 @@ class LongTermMemoryStore:
     - Deduplication: O(n log n) using FAISS batch search
     """
 
-    MEMORY_FILE_NAME = "long-memories.json"
     DEDUP_INTERVAL_HOURS = 24
 
     def __init__(self, endpoint: str, embedding_model: SentenceTransformer):
         self.endpoint = endpoint
         self.model = embedding_model
-        self._cache: dict[str, MemoryCollection] = {}  # conversation_id -> cached data
+        self._cache: dict[str, MemoryCollection] = {}  # file_path -> cached data
 
     async def _get_memory_file_path(self, dial_client: AsyncDial) -> str:
         """Get the path to the memory file in DIAL bucket."""
         user_home = await dial_client.my_appdata_home()
-        return f"files/{(user_home / self.MEMORY_FILE_NAME).as_posix()}"
+        return f"files/{(user_home / '__long-memories/data.json').as_posix()}"
 
-    async def _load_memories(self, api_key: str, conversation_id: str) -> MemoryCollection:
-        if conversation_id in self._cache:
-            return self._cache[conversation_id]
-
+    async def _load_memories(self, api_key: str) -> MemoryCollection:
         dial_client = AsyncDial(base_url=self.endpoint, api_key=api_key)
         file_path = await self._get_memory_file_path(dial_client)
+
+        if file_path in self._cache:
+            return self._cache[file_path]
 
         try:
             response = await dial_client.files.download(file_path)
@@ -48,11 +47,11 @@ class LongTermMemoryStore:
             print(f"No existing memory file or error loading: {e}")
             collection = MemoryCollection()
 
-        self._cache[conversation_id] = collection
+        self._cache[file_path] = collection
 
         return collection
 
-    async def _save_memories(self, api_key: str, conversation_id: str, memories: MemoryCollection):
+    async def _save_memories(self, api_key: str, memories: MemoryCollection):
         """Save memories to DIAL bucket and update cache."""
         dial_client = AsyncDial(base_url=self.endpoint, api_key=api_key)
         file_path = await self._get_memory_file_path(dial_client)
@@ -64,21 +63,13 @@ class LongTermMemoryStore:
 
         await dial_client.files.upload(url=file_path, file=file_bytes)
 
-        self._cache[conversation_id] = memories
+        self._cache[file_path] = memories
 
         print(f"Saved memories to {file_path}")
 
-    async def add_memory(
-            self,
-            api_key: str,
-            conversation_id: str,
-            content: str,
-            importance: float,
-            category: str,
-            topics: list[str]
-    ) -> str:
+    async def add_memory(self, api_key: str, content: str, importance: float, category: str, topics: list[str]) -> str:
         """Add a new memory to storage."""
-        collection = await self._load_memories(api_key, conversation_id)
+        collection = await self._load_memories(api_key)
 
         embedding = self.model.encode([content])[0].tolist()
 
@@ -95,31 +86,25 @@ class LongTermMemoryStore:
 
         collection.memories.append(memory)
 
-        await self._save_memories(api_key, conversation_id, collection)
+        await self._save_memories(api_key, collection)
 
         return f"Successfully stored memory: {content}"
 
-    async def search_memories(
-            self,
-            api_key: str,
-            conversation_id: str,
-            query: str,
-            top_k: int = 5
-    ) -> list[MemoryData]:
+    async def search_memories(self, api_key: str, query: str, top_k: int = 5) -> list[MemoryData]:
         """
         Search memories using semantic similarity.
 
         Returns:
             List of MemoryData objects (without embeddings)
         """
-        collection = await self._load_memories(api_key, conversation_id)
+        collection = await self._load_memories(api_key)
 
         if not collection.memories:
             return []
 
         if self._needs_deduplication(collection):
-            print(f"Deduplication needed for conversation {conversation_id}, running now...")
-            collection = await self._deduplicate_and_save(api_key, conversation_id, collection)
+            print("Deduplication needed, running now...")
+            collection = await self._deduplicate_and_save(api_key, collection)
 
         embeddings = np.array([m.embedding for m in collection.memories]).astype('float32')
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
@@ -152,12 +137,7 @@ class LongTermMemoryStore:
             print(f"Error checking deduplication need: {e}")
             return False
 
-    async def _deduplicate_and_save(
-            self,
-            api_key: str,
-            conversation_id: str,
-            collection: MemoryCollection
-    ) -> MemoryCollection:
+    async def _deduplicate_and_save(self, api_key: str, collection: MemoryCollection) -> MemoryCollection:
         """
         Deduplicate memories synchronously and save the result.
         Returns the updated collection.
@@ -173,7 +153,7 @@ class LongTermMemoryStore:
             collection.memories = deduplicated_memories
             collection.last_deduplicated_at = datetime.now(UTC)
 
-            await self._save_memories(api_key, conversation_id, collection)
+            await self._save_memories(api_key, collection)
 
             removed_count = original_count - len(deduplicated_memories)
             print(f"Deduplication complete: {original_count} -> {len(deduplicated_memories)} (removed {removed_count})")
@@ -187,7 +167,7 @@ class LongTermMemoryStore:
 
     def _deduplicate_fast(self, memories: list[Memory]) -> list[Memory]:
         """
-        Fast O(n log n) deduplication using FAISS batch search with cosine similarity.
+        Fast deduplication using FAISS batch search with cosine similarity.
 
         Strategy:
         - Find k nearest neighbors for each memory using cosine similarity
@@ -252,11 +232,7 @@ class LongTermMemoryStore:
 
         return deduplicated
 
-    async def delete_all_memories(
-            self,
-            api_key: str,
-            conversation_id: str
-    ) -> str:
+    async def delete_all_memories(self, api_key: str, ) -> str:
         """
         Delete all memories for the user.
 
@@ -267,18 +243,15 @@ class LongTermMemoryStore:
             dial_client = AsyncDial(base_url=self.endpoint, api_key=api_key)
             file_path = await self._get_memory_file_path(dial_client)
 
-            # Delete file from DIAL bucket
             try:
                 await dial_client.files.delete(file_path)
                 print(f"Deleted memory file: {file_path}")
             except Exception as e:
-                # File might not exist, which is fine
                 print(f"Memory file not found or already deleted: {e}")
 
-            # Clear cache for this conversation
-            if conversation_id in self._cache:
-                del self._cache[conversation_id]
-                print(f"Cleared memory cache for conversation: {conversation_id}")
+            if file_path in self._cache:
+                del self._cache[file_path]
+                print(f"Cleared memory cache: {file_path}")
 
             return "Successfully deleted all long-term memories."
 
