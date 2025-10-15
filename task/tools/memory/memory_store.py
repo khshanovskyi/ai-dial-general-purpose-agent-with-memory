@@ -1,238 +1,288 @@
 import json
-import threading
-from datetime import datetime
-from pathlib import Path
-from typing import Optional
+from datetime import datetime, UTC, timedelta
 
+import numpy as np
 import faiss
-from pydantic import BaseModel
+from aidial_client import AsyncDial
 from sentence_transformers import SentenceTransformer
 
-
-class MemoryEntry(BaseModel):
-    """Single memory entry with metadata"""
-    id: str
-    content: str
-    timestamp: str
-    importance: float = 1.0  # 0.0 to 1.0
-    access_count: int = 0
-    last_accessed: Optional[str] = None
-    metadata: dict = {}
+from task.tools.memory._models import Memory, MemoryData, MemoryCollection
 
 
-class MemoryStore:
+class LongTermMemoryStore:
     """
-    Long-term memory storage using FAISS for semantic search.
-    Persists memories to disk and supports retrieval based on relevance.
+    Manages long-term memory storage for users.
+
+    Storage format: Single JSON file per user in DIAL bucket
+    - File: {user_id}/long-memories.json
+    - Caching: In-memory cache with conversation_id as key
+    - Deduplication: O(n log n) using FAISS batch search
     """
 
-    def __init__(self, storage_dir: str = "./memory_data", embedding_model: str = "all-MiniLM-L6-v2"):
-        self.storage_dir = Path(storage_dir)
-        self.storage_dir.mkdir(parents=True, exist_ok=True)
+    MEMORY_FILE_NAME = "long-memories.json"
+    DEDUP_INTERVAL_HOURS = 24
 
-        self.memories_file = self.storage_dir / "memories.json"
-        self.index_file = self.storage_dir / "faiss_index.bin"
+    def __init__(self, endpoint: str, embedding_model: SentenceTransformer):
+        self.endpoint = endpoint
+        self.model = embedding_model
+        self._cache: dict[str, MemoryCollection] = {}  # conversation_id -> cached data
 
-        self.model = SentenceTransformer(embedding_model)
-        self.embedding_dim = 384
+    async def _get_memory_file_path(self, dial_client: AsyncDial) -> str:
+        """Get the path to the memory file in DIAL bucket."""
+        user_home = await dial_client.my_appdata_home()
+        return f"files/{(user_home / self.MEMORY_FILE_NAME).as_posix()}"
 
-        self._memories: dict[str, MemoryEntry] = {}
-        self._index: Optional[faiss.Index] = None
-        self._id_to_index: dict[str, int] = {}
-        self._lock = threading.Lock()
+    async def _load_memories(self, api_key: str, conversation_id: str) -> MemoryCollection:
+        if conversation_id in self._cache:
+            return self._cache[conversation_id]
 
-        self._load()
+        dial_client = AsyncDial(base_url=self.endpoint, api_key=api_key)
+        file_path = await self._get_memory_file_path(dial_client)
 
-    def _load(self):
-        """Load memories and FAISS index from disk"""
-        with self._lock:
-            if self.memories_file.exists():
-                with open(self.memories_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self._memories = {
-                        mem_id: MemoryEntry(**mem_data)
-                        for mem_id, mem_data in data.items()
-                    }
-                print(f"[MemoryStore] Loaded {len(self._memories)} memories from disk")
+        try:
+            response = await dial_client.files.download(file_path)
+            content = response.get_content().decode('utf-8')
+            data = json.loads(content)
+            collection = MemoryCollection.model_validate(data)
+        except Exception as e:
+            print(f"No existing memory file or error loading: {e}")
+            collection = MemoryCollection()
 
-            if self.index_file.exists() and self._memories:
-                self._index = faiss.read_index(str(self.index_file))
-                self._id_to_index = {mem_id: idx for idx, mem_id in enumerate(self._memories.keys())}
-                print(f"[MemoryStore] Loaded FAISS index from disk")
-            else:
-                self._index = faiss.IndexFlatL2(self.embedding_dim)
-                self._id_to_index = {}
+        self._cache[conversation_id] = collection
 
-    def _save(self):
-        """Save memories and FAISS index to disk"""
-        with self._lock:
-            with open(self.memories_file, 'w', encoding='utf-8') as f:
-                data = {mem_id: mem.model_dump() for mem_id, mem in self._memories.items()}
-                json.dump(data, f, indent=2, ensure_ascii=False)
+        return collection
 
-            if self._index and self._index.ntotal > 0:
-                faiss.write_index(self._index, str(self.index_file))
+    async def _save_memories(self, api_key: str, conversation_id: str, memories: MemoryCollection):
+        """Save memories to DIAL bucket and update cache."""
+        dial_client = AsyncDial(base_url=self.endpoint, api_key=api_key)
+        file_path = await self._get_memory_file_path(dial_client)
 
-    def add_memory(self, content: str, importance: float = 1.0, metadata: dict = None) -> str:
-        """
-        Add a new memory to the store.
+        memories.updated_at = datetime.now(UTC)
 
-        Args:
-            content: The memory content
-            importance: Importance score (0.0 to 1.0)
-            metadata: Additional metadata dict
+        json_content = memories.model_dump_json(indent=2)
+        file_bytes = json_content.encode('utf-8')
 
-        Returns:
-            Memory ID
-        """
-        with self._lock:
-            memory_id = f"mem_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+        await dial_client.files.upload(url=file_path, file=file_bytes)
 
-            memory = MemoryEntry(
-                id=memory_id,
+        self._cache[conversation_id] = memories
+
+        print(f"Saved memories to {file_path}")
+
+    async def add_memory(
+            self,
+            api_key: str,
+            conversation_id: str,
+            content: str,
+            importance: float,
+            category: str,
+            topics: list[str]
+    ) -> str:
+        """Add a new memory to storage."""
+        collection = await self._load_memories(api_key, conversation_id)
+
+        embedding = self.model.encode([content])[0].tolist()
+
+        memory = Memory(
+            data=MemoryData(
+                id=int(datetime.now(UTC).timestamp()),
                 content=content,
-                timestamp=datetime.now().isoformat(),
-                importance=min(max(importance, 0.0), 1.0),
-                metadata=metadata or {}
-            )
+                importance=importance,
+                category=category,
+                topics=topics
+            ),
+            embedding=embedding
+        )
 
-            embedding = self.model.encode([content]).astype('float32')
+        collection.memories.append(memory)
 
-            self._memories[memory_id] = memory
-            self._id_to_index[memory_id] = self._index.ntotal
-            self._index.add(embedding)
+        await self._save_memories(api_key, conversation_id, collection)
 
-            self._save()
+        return f"Successfully stored memory: {content}"
 
-            print(f"[MemoryStore] Added memory: {memory_id[:20]}... (importance: {importance})")
-            return memory_id
-
-    def search(self, query: str, top_k: int = 5, min_importance: float = 0.0) -> list[MemoryEntry]:
+    async def search_memories(
+            self,
+            api_key: str,
+            conversation_id: str,
+            query: str,
+            top_k: int = 5
+    ) -> list[MemoryData]:
         """
-        Search for relevant memories using semantic similarity.
-
-        Args:
-            query: Search query
-            top_k: Number of results to return
-            min_importance: Minimum importance threshold
+        Search memories using semantic similarity.
 
         Returns:
-            List of relevant MemoryEntry objects
+            List of MemoryData objects (without embeddings)
         """
-        with self._lock:
-            if not self._memories or self._index.ntotal == 0:
-                return []
+        collection = await self._load_memories(api_key, conversation_id)
 
-            query_embedding = self.model.encode([query]).astype('float32')
-            k = min(top_k * 2, self._index.ntotal)  # Get extra to filter by importance
+        if not collection.memories:
+            return []
 
-            distances, indices = self._index.search(query_embedding, k=k)
+        if self._needs_deduplication(collection):
+            print(f"Deduplication needed for conversation {conversation_id}, running now...")
+            collection = await self._deduplicate_and_save(api_key, conversation_id, collection)
 
-            results = []
-            index_to_id = {idx: mem_id for mem_id, idx in self._id_to_index.items()}
+        embeddings = np.array([m.embedding for m in collection.memories]).astype('float32')
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        normalized_embeddings = embeddings / norms
 
-            for distance, idx in zip(distances[0], indices[0]):
-                if idx == -1:
+        index = faiss.IndexFlatIP(normalized_embeddings.shape[1])
+        index.add(normalized_embeddings)
+
+        query_embedding = self.model.encode([query]).astype('float32')
+        query_norm = np.linalg.norm(query_embedding, keepdims=True)
+        normalized_query = query_embedding / query_norm
+
+        k = min(top_k, len(collection.memories))
+        similarities, indices = index.search(normalized_query, k)
+
+        results = [collection.memories[i].data for i in indices[0]]
+
+        return results
+
+    def _needs_deduplication(self, collection: MemoryCollection) -> bool:
+        """Check if deduplication is needed (>24 hours since last deduplication)."""
+        try:
+            # If never deduplicated, trigger it
+            if collection.last_deduplicated_at is None:
+                return True
+
+            time_since_dedup = datetime.now(UTC) - collection.last_deduplicated_at
+            return time_since_dedup > timedelta(hours=self.DEDUP_INTERVAL_HOURS)
+        except Exception as e:
+            print(f"Error checking deduplication need: {e}")
+            return False
+
+    async def _deduplicate_and_save(
+            self,
+            api_key: str,
+            conversation_id: str,
+            collection: MemoryCollection
+    ) -> MemoryCollection:
+        """
+        Deduplicate memories synchronously and save the result.
+        Returns the updated collection.
+        """
+        try:
+            original_count = len(collection.memories)
+
+            if original_count < 2:
+                return collection
+
+            deduplicated_memories = self._deduplicate_fast(collection.memories)
+
+            collection.memories = deduplicated_memories
+            collection.last_deduplicated_at = datetime.now(UTC)
+
+            await self._save_memories(api_key, conversation_id, collection)
+
+            removed_count = original_count - len(deduplicated_memories)
+            print(f"Deduplication complete: {original_count} -> {len(deduplicated_memories)} (removed {removed_count})")
+
+            return collection
+
+        except Exception as e:
+            print(f"Error during deduplication: {e}")
+            # Return original collection so search can continue
+            return collection
+
+    def _deduplicate_fast(self, memories: list[Memory]) -> list[Memory]:
+        """
+        Fast O(n log n) deduplication using FAISS batch search with cosine similarity.
+
+        Strategy:
+        - Find k nearest neighbors for each memory using cosine similarity
+        - Mark duplicates based on similarity threshold (cosine similarity > 0.75)
+        - Keep memory with higher importance
+
+        Returns:
+            Deduplicated list of Memory objects
+        """
+        if len(memories) < 2:
+            return memories
+
+        # Extract embeddings
+        embeddings = np.array([m.embedding for m in memories]).astype('float32')
+        n = len(embeddings)
+
+        # Normalize embeddings for cosine similarity
+        # Cosine similarity = dot(a, b) / (||a|| * ||b||)
+        # If normalized, cosine similarity = dot(a, b)
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        normalized_embeddings = embeddings / norms
+
+        # Build FAISS index for inner product (cosine similarity with normalized vectors)
+        index = faiss.IndexFlatIP(normalized_embeddings.shape[1])
+        index.add(normalized_embeddings)
+
+        # Batch search: Find k nearest neighbors for ALL vectors at once
+        k = min(10, n)
+        similarities, indices = index.search(normalized_embeddings, k)
+        # Note: similarities now contains cosine similarity values (range: -1 to 1)
+        # Higher values = more similar
+
+        # Mark duplicates
+        duplicates_to_remove = set()
+
+        for i in range(n):
+            if i in duplicates_to_remove:
+                continue
+
+            # Check neighbors (skip index 0 which is itself with similarity ~1.0)
+            for j in range(1, k):
+                neighbor_idx = indices[i][j]
+
+                # Skip if already marked
+                if neighbor_idx in duplicates_to_remove:
                     continue
 
-                memory_id = index_to_id.get(idx)
-                if not memory_id:
-                    continue
+                # Cosine similarity threshold: > 0.75 means similar/duplicate
+                if similarities[i][j] > 0.75:
+                    # Compare importance
+                    importance_i = memories[i].data.importance
+                    importance_neighbor = memories[neighbor_idx].data.importance
 
-                memory = self._memories[memory_id]
+                    # Keep the one with higher importance
+                    if importance_i >= importance_neighbor:
+                        duplicates_to_remove.add(neighbor_idx)
+                    else:
+                        duplicates_to_remove.add(i)
+                        break  # This memory is marked, move to next
 
-                if memory.importance >= min_importance:
-                    # Update access metadata
-                    memory.access_count += 1
-                    memory.last_accessed = datetime.now().isoformat()
-                    results.append(memory)
+        deduplicated = [m for i, m in enumerate(memories) if i not in duplicates_to_remove]
 
-                if len(results) >= top_k:
-                    break
+        return deduplicated
 
-            self._save()
-            return results
+    async def delete_all_memories(
+            self,
+            api_key: str,
+            conversation_id: str
+    ) -> str:
+        """
+        Delete all memories for the user.
 
-    def get_memory(self, memory_id: str) -> Optional[MemoryEntry]:
-        """Get a specific memory by ID"""
-        with self._lock:
-            return self._memories.get(memory_id)
+        Removes the memory file from DIAL bucket and clears the cache
+        for the current conversation.
+        """
+        try:
+            dial_client = AsyncDial(base_url=self.endpoint, api_key=api_key)
+            file_path = await self._get_memory_file_path(dial_client)
 
-    def update_memory(self, memory_id: str, content: Optional[str] = None,
-                      importance: Optional[float] = None, metadata: Optional[dict] = None) -> bool:
-        """Update an existing memory"""
-        with self._lock:
-            memory = self._memories.get(memory_id)
-            if not memory:
-                return False
+            # Delete file from DIAL bucket
+            try:
+                await dial_client.files.delete(file_path)
+                print(f"Deleted memory file: {file_path}")
+            except Exception as e:
+                # File might not exist, which is fine
+                print(f"Memory file not found or already deleted: {e}")
 
-            if content is not None:
-                memory.content = content
-                # Re-encode and update index
-                embedding = self.model.encode([content]).astype('float32')
-                idx = self._id_to_index[memory_id]
-                # FAISS doesn't support in-place updates, so rebuild is needed
-                # For now, just note it needs update
-                memory.metadata['needs_reindex'] = True
+            # Clear cache for this conversation
+            if conversation_id in self._cache:
+                del self._cache[conversation_id]
+                print(f"Cleared memory cache for conversation: {conversation_id}")
 
-            if importance is not None:
-                memory.importance = min(max(importance, 0.0), 1.0)
+            return "Successfully deleted all long-term memories."
 
-            if metadata is not None:
-                memory.metadata.update(metadata)
-
-            self._save()
-            return True
-
-    def delete_memory(self, memory_id: str) -> bool:
-        """Delete a memory by ID"""
-        with self._lock:
-            if memory_id not in self._memories:
-                return False
-
-            del self._memories[memory_id]
-            del self._id_to_index[memory_id]
-
-            # Rebuild index without this memory
-            self._rebuild_index()
-            self._save()
-
-            print(f"[MemoryStore] Deleted memory: {memory_id}")
-            return True
-
-    def _rebuild_index(self):
-        """Rebuild FAISS index from scratch"""
-        self._index = faiss.IndexFlatL2(self.embedding_dim)
-        self._id_to_index = {}
-
-        if not self._memories:
-            return
-
-        contents = [mem.content for mem in self._memories.values()]
-        embeddings = self.model.encode(contents).astype('float32')
-
-        self._index.add(embeddings)
-        self._id_to_index = {mem_id: idx for idx, mem_id in enumerate(self._memories.keys())}
-
-    def get_all_memories(self) -> list[MemoryEntry]:
-        """Get all memories sorted by timestamp (newest first)"""
-        with self._lock:
-            return sorted(
-                self._memories.values(),
-                key=lambda m: m.timestamp,
-                reverse=True
-            )
-
-    def clear_all(self):
-        """Clear all memories"""
-        with self._lock:
-            self._memories.clear()
-            self._id_to_index.clear()
-            self._index = faiss.IndexFlatL2(self.embedding_dim)
-            self._save()
-            print("[MemoryStore] Cleared all memories")
-
-    def size(self) -> int:
-        """Return number of stored memories"""
-        with self._lock:
-            return len(self._memories)
+        except Exception as e:
+            error_msg = f"Error deleting memories: {e}"
+            print(error_msg)
+            return error_msg

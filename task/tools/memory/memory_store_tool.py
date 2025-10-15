@@ -1,45 +1,38 @@
 import json
 from typing import Any
 
-from aidial_sdk.chat_completion import Message
-
 from task.tools.base import BaseTool
-from task.tools.memory.memory_store import MemoryStore
+from task.tools.memory.memory_store import LongTermMemoryStore
 from task.tools.models import ToolCallParams
 
-_DESCRIPTION = """Store long-term memories that persist across conversations.
 
-Use this tool to save important information for future reference (user preferences, facts, context)
-
-When to store memories:
-- User shares personal information (preferences, background, goals)
-- Important facts or decisions that should be remembered
-- Context that would be useful in future conversations
-- User explicitly asks to remember something
-
-Importance levels:
-- 1.0: Critical information (user's name, core preferences)
-- 0.7: Important facts (project details, frequently used info)
-- 0.5: Useful context (casual preferences, minor details)
-"""
-
-
-class MemoryStoreTool(BaseTool):
+class StoreMemoryTool(BaseTool):
     """
-    Tool for storing long-term memories.
-    Allows the agent to remember information across conversations.
+    Tool for storing long-term memories about the user.
+
+    The orchestration LLM should extract important, novel facts about the user
+    and store them using this tool. Examples:
+    - User preferences (likes Python, prefers morning meetings)
+    - Personal information (lives in Paris, works at Google)
+    - Goals and plans (learning Spanish, traveling to Japan)
+    - Important context (has a cat named Mittens)
     """
 
-    def __init__(self, memory_store: MemoryStore):
-        self._memory_store = memory_store
+    def __init__(self, memory_store: LongTermMemoryStore):
+        self.memory_store = memory_store
 
     @property
     def name(self) -> str:
-        return "memory_store_tool"
+        return "store_long_term_memory"
 
     @property
     def description(self) -> str:
-        return _DESCRIPTION
+        return (
+            "Store important information about the user for long-term memory. "
+            "Use this to remember user preferences, personal details, goals, and context "
+            "that should be recalled in future conversations. "
+            "Only store novel, important facts - avoid duplicates and temporary information."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -48,43 +41,47 @@ class MemoryStoreTool(BaseTool):
             "properties": {
                 "content": {
                     "type": "string",
-                    "description": "The important information to remember."
+                    "description": "The memory content to store. Should be a clear, concise fact about the user."
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Category of the info (e.g., 'preferences', 'personal_info', 'goals', 'plans', 'context')",
+                    "default": "general"
                 },
                 "importance": {
                     "type": "number",
-                    "minimum": 0.0,
-                    "maximum": 1.0,
-                    "default": 0.7,
-                    "description": "Importance score (0.0-1.0). Higher = more important."
+                    "description": "Importance score between 0 and 1. Higher means more important to remember.",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "default": 0.5
+                },
+                "topics": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Related topics or tags for the memory",
+                    "default": []
                 }
             },
-            "required": ["content"]
+            "required": ["content", "category"]
         }
 
-    async def _execute(self, tool_call_params: ToolCallParams) -> str | Message:
+    async def _execute(self, tool_call_params: ToolCallParams) -> str:
         arguments = json.loads(tool_call_params.tool_call.function.arguments)
+
         content = arguments["content"]
+        importance = arguments.get("importance", 0.5)
+        category = arguments.get("category")
+        topics = arguments.get("topics", [])
 
-        stage = tool_call_params.stage
-        stage.append_content("## Request arguments: \n")
-        stage.append_content(f"**Content**: {content}\n\n")
+        result = await self.memory_store.add_memory(
+                api_key=tool_call_params.api_key,
+                conversation_id=tool_call_params.conversation_id,
+                content=content,
+                importance=importance,
+                category=category,
+                topics=topics
+            )
 
-        importance = arguments.get("importance", 0.7)
-        stage.append_content(f"**Importance**: {importance}\n\n")
-        stage.append_content("## Response: \n")
+        tool_call_params.stage.append_content(result)
 
-        memory_id = self._memory_store.add_memory(
-            content=content,
-            importance=importance,
-            metadata={"conversation_id": tool_call_params.conversation_id}
-        )
-
-        result = {
-            "success": True,
-            "memory_id": memory_id,
-            "message": "Memory stored successfully"
-        }
-
-        stage.append_content(f"✓ Memory stored (ID: {memory_id})\n")
-
-        return json.dumps(result, indent=2)
+        return result

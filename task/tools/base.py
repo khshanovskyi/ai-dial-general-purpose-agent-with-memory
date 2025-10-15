@@ -33,6 +33,10 @@ class BaseTool(ABC):
         pass
 
     @property
+    def create_tool_stage(self) -> bool:
+        return True
+
+    @property
     def show_in_stage(self) -> bool:
         return True
 

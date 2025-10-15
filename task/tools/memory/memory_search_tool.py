@@ -1,99 +1,78 @@
 import json
 from typing import Any
 
-from aidial_sdk.chat_completion import Message
-
 from task.tools.base import BaseTool
-from task.tools.memory.memory_store import MemoryStore
+from task.tools.memory._models import MemoryData
+from task.tools.memory.memory_store import LongTermMemoryStore
 from task.tools.models import ToolCallParams
 
-_DESCRIPTION = """Search long-term memories that persist across conversations.
 
-Use this tool to find relevant memories from past conversations
-
-When to search memories:
-- At the start of conversations to recall relevant context
-- When user references past interactions
-- When making personalized recommendations
-"""
-
-
-class MemorySearchTool(BaseTool):
+class SearchMemoryTool(BaseTool):
     """
-    Tool for retrieving long-term memories.
-    Allows the agent to remember information across conversations.
+    Tool for searching long-term memories about the user.
+
+    Performs semantic search over stored memories to find relevant information.
     """
 
-    def __init__(self, memory_store: MemoryStore):
-        self._memory_store = memory_store
+    def __init__(self, memory_store: LongTermMemoryStore):
+        self.memory_store = memory_store
+
 
     @property
     def name(self) -> str:
-        return "memory_search_tool"
+        return "search_long_term_memory"
 
     @property
     def description(self) -> str:
-        return _DESCRIPTION
+        return (
+            "Search long-term memories about the user using semantic similarity. "
+            "Use this to recall user preferences, personal information, goals, and context "
+            "from previous conversations. Returns the most relevant memories based on the query."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "content": {
+                "query": {
                     "type": "string",
-                    "description": "The query to search for."
+                    "description": "The search query. Can be a question or keywords to find relevant memories."
                 },
                 "top_k": {
                     "type": "integer",
+                    "description": "Number of most relevant memories to return",
+                    "default": 5,
                     "minimum": 1,
-                    "maximum": 10,
-                    "default": 3,
-                    "description": "Number of memories to return."
+                    "maximum": 20
                 }
             },
             "required": ["query"]
         }
 
-    async def _execute(self, tool_call_params: ToolCallParams) -> str | Message:
+    async def _execute(self, tool_call_params: ToolCallParams) -> str:
         arguments = json.loads(tool_call_params.tool_call.function.arguments)
         query = arguments["query"]
+        top_k = arguments.get("top_k", 5)
 
-        stage = tool_call_params.stage
-        stage.append_content("## Request arguments: \n")
-        stage.append_content(f"**Query**: {query}\n\n")
+        results: list[MemoryData] = await self.memory_store.search_memories(
+            api_key=tool_call_params.api_key,
+            conversation_id=tool_call_params.conversation_id,
+            query=query,
+            top_k=top_k
+        )
 
-        top_k = arguments.get("top_k", 3)
-        stage.append_content(f"**Top K**: {top_k}\n\n")
-        stage.append_content("## Response: \n")
+        if not results:
+            result_text = "No memories found."
+            return result_text
 
-        memories = self._memory_store.search(query=query, top_k=top_k)
+        final_result = f"Found {len(results)} relevant memories:\n"
+        for memory in results:
+            final_result += f"**Category:**{memory.category},\n **Importance:**{memory.importance},\n"
+            if memory.topics:
+                final_result += f"**Topics:** {', '.join(memory.topics)}, \n"
+            final_result += f"**Content:**{memory.content};\n\n"
 
-        if not memories:
-            result = {
-                "success": True,
-                "results": [],
-                "message": "No relevant memories found"
-            }
-            stage.append_content("No relevant memories found.\n")
-        else:
-            results_list = []
-            for idx, memory in enumerate(memories, 1):
-                results_list.append({
-                    "memory_id": memory.id,
-                    "content": memory.content,
-                    "importance": memory.importance,
-                    "timestamp": memory.timestamp,
-                    "access_count": memory.access_count
-                })
-                stage.append_content(f"\n**Memory {idx}** (importance: {memory.importance}):\n")
-                stage.append_content(f"{memory.content}\n")
-                stage.append_content(f"_Stored: {memory.timestamp}_\n")
+        tool_call_params.stage.append_content(final_result)
 
-            result = {
-                "success": True,
-                "results": results_list,
-                "message": f"Found {len(memories)} relevant memories"
-            }
-
-        return json.dumps(result, indent=2)
+        return final_result
