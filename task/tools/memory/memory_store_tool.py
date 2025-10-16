@@ -31,7 +31,6 @@ class StoreMemoryTool(BaseTool):
             "Store important information about the user for long-term memory. "
             "Use this to remember user preferences, personal details, goals, and context "
             "that should be recalled in future conversations. "
-            "Only store novel, important facts - avoid duplicates and temporary information."
         )
 
     @property
