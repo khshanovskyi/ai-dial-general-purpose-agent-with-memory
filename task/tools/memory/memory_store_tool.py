@@ -23,63 +23,32 @@ class StoreMemoryTool(BaseTool):
 
     @property
     def name(self) -> str:
-        return "store_long_term_memory"
+        # TODO: provide self-descriptive name
+        raise NotImplementedError()
 
     @property
     def description(self) -> str:
-        return (
-            "Store important information about the user for long-term memory. "
-            "Use this to remember user preferences, personal details, goals, and context "
-            "that should be recalled in future conversations. "
-        )
+        # TODO: provide tool description that will help LLM to understand when to use this tools and cover 'tricky'
+        #  moments (not more 1024 chars)
+        raise NotImplementedError()
 
     @property
     def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "The memory content to store. Should be a clear, concise fact about the user."
-                },
-                "category": {
-                    "type": "string",
-                    "description": "Category of the info (e.g., 'preferences', 'personal_info', 'goals', 'plans', 'context')",
-                    "default": "general"
-                },
-                "importance": {
-                    "type": "number",
-                    "description": "Importance score between 0 and 1. Higher means more important to remember.",
-                    "minimum": 0,
-                    "maximum": 1,
-                    "default": 0.5
-                },
-                "topics": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Related topics or tags for the memory",
-                    "default": []
-                }
-            },
-            "required": ["content", "category"]
-        }
+        # TODO: provide tool parameters JSON Schema:
+        #  - content is string, description: "The memory content to store. Should be a clear, concise fact about the user.", required
+        #  - category is string, description: "Category of the info (e.g., 'preferences', 'personal_info', 'goals', 'plans', 'context')", default is 'general' required
+        #  - importance is number, description: "Importance score between 0 and 1. Higher means more important to remember.", minimum is 0, maximum is 1, default is 0.5
+        #  - topics is array of strings, description: "Related topics or tags for the memory", default is empty array
+        raise NotImplementedError()
 
     async def _execute(self, tool_call_params: ToolCallParams) -> str:
-        arguments = json.loads(tool_call_params.tool_call.function.arguments)
-
-        content = arguments["content"]
-        importance = arguments.get("importance", 0.5)
-        category = arguments.get("category")
-        topics = arguments.get("topics", [])
-
-        result = await self.memory_store.add_memory(
-                api_key=tool_call_params.api_key,
-                content=content,
-                importance=importance,
-                category=category,
-                topics=topics
-            )
-
-        tool_call_params.stage.append_content(result)
-
-        return result
+        #TODO:
+        # 1. Load arguments with `json`
+        # 2. Get `content` from arguments
+        # 3. Get `category` from arguments
+        # 4. Get `importance` from arguments, default is 0.5
+        # 5. Get `topics` from arguments, default is empty array
+        # 6. Call `memory_store` `add_memory` (we will implement logic in `memory_store` later)
+        # 7. Add result to stage
+        # 8. Return result
+        raise NotImplementedError()

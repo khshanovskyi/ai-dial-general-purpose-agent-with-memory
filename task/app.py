@@ -60,9 +60,8 @@ class GeneralPurposeAgentApplication(ChatCompletion):
                 dial_endpoint=DIAL_ENDPOINT
             ),
 
-            StoreMemoryTool(memory_store=self.memory_store),
-            SearchMemoryTool(memory_store=self.memory_store),
-            DeleteMemoryTool(memory_store=self.memory_store),
+            #TODO:
+            # Add tools with Long-term memory capabilities
         ]
 
         tools.extend(await self._get_mcp_tools("http://localhost:8051/mcp"))
