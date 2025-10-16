@@ -29,7 +29,6 @@ class GeneralPurposeAgentApplication(ChatCompletion):
 
     def __init__(self):
         self.tools: list[BaseTool] = []
-        # Shared embedding model for memory and RAG
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
     async def _get_mcp_tools(self, url: str) -> list[BaseTool]:
@@ -100,4 +99,8 @@ agent_app = GeneralPurposeAgentApplication()
 app.add_chat_completion(deployment_name="general-purpose-agent", impl=agent_app)
 
 if __name__ == "__main__":
-    uvicorn.run(app, port=5030, host="0.0.0.0")
+    import uvicorn
+    config = uvicorn.Config(app, port=5030, host="0.0.0.0")
+    server = uvicorn.Server(config)
+    import asyncio
+    asyncio.run(server.serve())

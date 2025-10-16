@@ -1,6 +1,8 @@
+import os
+os.environ['OMP_NUM_THREADS'] = '1'
+
 import json
 from datetime import datetime, UTC, timedelta
-
 import numpy as np
 import faiss
 from aidial_client import AsyncDial
@@ -24,7 +26,10 @@ class LongTermMemoryStore:
     def __init__(self, endpoint: str, embedding_model: SentenceTransformer):
         self.endpoint = endpoint
         self.model = embedding_model
-        self._cache: dict[str, MemoryCollection] = {}  # file_path -> cached data
+        self._cache: dict[str, MemoryCollection] = {}
+
+        # Set single-threaded mode for FAISS (additional safety)
+        faiss.omp_set_num_threads(1)
 
     async def _get_memory_file_path(self, dial_client: AsyncDial) -> str:
         """Get the path to the memory file in DIAL bucket."""
@@ -58,7 +63,7 @@ class LongTermMemoryStore:
 
         memories.updated_at = datetime.now(UTC)
 
-        json_content = memories.model_dump_json(indent=2)
+        json_content = memories.model_dump_json()
         file_bytes = json_content.encode('utf-8')
 
         await dial_client.files.upload(url=file_path, file=file_bytes)
@@ -173,63 +178,42 @@ class LongTermMemoryStore:
         - Find k nearest neighbors for each memory using cosine similarity
         - Mark duplicates based on similarity threshold (cosine similarity > 0.75)
         - Keep memory with higher importance
-
-        Returns:
-            Deduplicated list of Memory objects
         """
         if len(memories) < 2:
             return memories
 
-        # Extract embeddings
         embeddings = np.array([m.embedding for m in memories]).astype('float32')
         n = len(embeddings)
 
-        # Normalize embeddings for cosine similarity
-        # Cosine similarity = dot(a, b) / (||a|| * ||b||)
-        # If normalized, cosine similarity = dot(a, b)
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         normalized_embeddings = embeddings / norms
 
-        # Build FAISS index for inner product (cosine similarity with normalized vectors)
         index = faiss.IndexFlatIP(normalized_embeddings.shape[1])
         index.add(normalized_embeddings)
 
-        # Batch search: Find k nearest neighbors for ALL vectors at once
         k = min(10, n)
         similarities, indices = index.search(normalized_embeddings, k)
-        # Note: similarities now contains cosine similarity values (range: -1 to 1)
-        # Higher values = more similar
 
-        # Mark duplicates
         duplicates_to_remove = set()
 
         for i in range(n):
             if i in duplicates_to_remove:
                 continue
 
-            # Check neighbors (skip index 0 which is itself with similarity ~1.0)
             for j in range(1, k):
                 neighbor_idx = indices[i][j]
 
-                # Skip if already marked
                 if neighbor_idx in duplicates_to_remove:
                     continue
 
-                # Cosine similarity threshold: > 0.75 means similar/duplicate
                 if similarities[i][j] > 0.75:
-                    # Compare importance
-                    importance_i = memories[i].data.importance
-                    importance_neighbor = memories[neighbor_idx].data.importance
-
-                    # Keep the one with higher importance
-                    if importance_i >= importance_neighbor:
+                    if memories[i].data.importance >= memories[neighbor_idx].data.importance:
                         duplicates_to_remove.add(neighbor_idx)
                     else:
                         duplicates_to_remove.add(i)
-                        break  # This memory is marked, move to next
+                        break
 
         deduplicated = [m for i, m in enumerate(memories) if i not in duplicates_to_remove]
-
         return deduplicated
 
     async def delete_all_memories(self, api_key: str, ) -> str:

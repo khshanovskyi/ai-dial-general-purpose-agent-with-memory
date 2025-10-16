@@ -62,15 +62,14 @@ class SearchMemoryTool(BaseTool):
         )
 
         if not results:
-            result_text = "No memories found."
-            return result_text
-
-        final_result = f"Found {len(results)} relevant memories:\n"
-        for memory in results:
-            final_result += f"**Category:**{memory.category},\n **Importance:**{memory.importance},\n"
-            if memory.topics:
-                final_result += f"**Topics:** {', '.join(memory.topics)}, \n"
-            final_result += f"**Content:**{memory.content};\n\n"
+            final_result = "No memories found."
+        else:
+            final_result = f"Found {len(results)} relevant memories:\n"
+            for memory in results:
+                final_result += f"**Category:**{memory.category},\n **Importance:**{memory.importance},\n"
+                if memory.topics:
+                    final_result += f"**Topics:** {', '.join(memory.topics)}, \n"
+                final_result += f"**Content:**{memory.content};\n\n"
 
         tool_call_params.stage.append_content(final_result)
 
