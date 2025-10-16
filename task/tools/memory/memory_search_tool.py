@@ -71,6 +71,6 @@ class SearchMemoryTool(BaseTool):
                     final_result += f"**Topics:** {', '.join(memory.topics)}, \n"
                 final_result += f"**Content:**{memory.content};\n\n"
 
-        tool_call_params.stage.append_content(final_result)
+        tool_call_params.stage.append_content(f"```text\n\r{final_result}\n\r```\n\r")
 
         return final_result

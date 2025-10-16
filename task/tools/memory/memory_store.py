@@ -23,9 +23,9 @@ class LongTermMemoryStore:
 
     DEDUP_INTERVAL_HOURS = 24
 
-    def __init__(self, endpoint: str, embedding_model: SentenceTransformer):
+    def __init__(self, endpoint: str):
         self.endpoint = endpoint
-        self.model = embedding_model
+        self.model = SentenceTransformer('all-MiniLM-L6-v2')
         self._cache: dict[str, MemoryCollection] = {}
 
         # Set single-threaded mode for FAISS (additional safety)
