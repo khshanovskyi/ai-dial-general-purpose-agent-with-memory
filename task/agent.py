@@ -8,6 +8,7 @@ from aidial_sdk.chat_completion import Message, Role, Choice, Request, Response
 
 from task.tools.base import BaseTool
 from task.tools.models import ToolCallParams
+from task.tools.memory.memory_service import LongTermMemoryService
 from task.utils.constants import TOOL_CALL_HISTORY_KEY
 from task.utils.history import unpack_messages
 from task.utils.stage import StageProcessor
@@ -20,10 +21,12 @@ class GeneralPurposeAgent:
             endpoint: str,
             system_prompt: str,
             tools: list[BaseTool],
+            memory_service: LongTermMemoryService,
     ):
         self.endpoint = endpoint
         self.system_prompt = system_prompt
         self.tools = tools
+        self.memory_service = memory_service
         self._tools_dict: dict[str, BaseTool] = {
             tool.name: tool
             for tool in tools
@@ -33,16 +36,38 @@ class GeneralPurposeAgent:
         }
 
     async def handle_request(
-            self, deployment_name: str, choice: Choice, request: Request, response: Response) -> Message:
+            self, deployment_name: str, choice: Choice, request: Request, response: Response
+    ) -> Message:
         api_key = request.api_key
-
         client: AsyncDial = AsyncDial(
             base_url=self.endpoint,
-            api_key=api_key,
+            api_key=request.api_key,
         )
 
+        memories_about_user = await self.memory_service.get_memories(api_key)
+
+        return await self._handle_request(
+            client=client,
+            deployment_name=deployment_name,
+            choice=choice,
+            request=request,
+            response=response,
+            memories_about_user=memories_about_user,
+        )
+
+    async def _handle_request(
+            self,
+            client: AsyncDial,
+            memories_about_user: str,
+            deployment_name: str,
+            choice: Choice,
+            request: Request,
+            response: Response
+    ) -> Message:
+        api_key = request.api_key
+
         chunks = await client.chat.completions.create(
-            messages=self._prepare_messages(request.messages),
+            messages=await self._prepare_messages(memories_about_user, request.messages),
             tools=[tool.schema for tool in self.tools],
             stream=True,
             deployment_name=deployment_name,
@@ -90,24 +115,34 @@ class GeneralPurposeAgent:
             self.state[TOOL_CALL_HISTORY_KEY].append(assistant_message.dict(exclude_none=True))
             self.state[TOOL_CALL_HISTORY_KEY].extend(tool_messages)
 
-            return await self.handle_request(
+            return await self._handle_request(
+                client=client,
                 deployment_name=deployment_name,
                 choice=choice,
                 request=request,
-                response=response
+                response=response,
+                memories_about_user=memories_about_user,
             )
+
+        await self.memory_service.update_memories(
+            api_key=api_key,
+            user_message=request.messages[-1].content,
+            assistant_message=assistant_message.content,
+            current_memories=memories_about_user,
+        )
 
         choice.set_state(self.state)
 
         return assistant_message
 
-    def _prepare_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
+    async def _prepare_messages(self, memories_about_user: str, messages: list[Message]) -> list[dict[str, Any]]:
         unpacked_messages = unpack_messages(messages, self.state[TOOL_CALL_HISTORY_KEY])
+        system_prompt_with_memory = self.system_prompt.format(USER_INFO=memories_about_user)
         unpacked_messages.insert(
             0,
             {
                 "role": Role.SYSTEM.value,
-                "content": self.system_prompt,
+                "content": system_prompt_with_memory,
             }
         )
 

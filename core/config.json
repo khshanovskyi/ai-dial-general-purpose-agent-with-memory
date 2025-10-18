@@ -29,6 +29,18 @@
         }
       ]
     },
+    "gpt-4.1-nano": {
+      "displayName": "gpt-4.1-nano",
+      "endpoint": "http://adapter-dial:5000/openai/deployments/gpt-4.1-nano/chat/completions",
+      "iconUrl": "http://localhost:3001/gpt4.svg",
+      "type": "chat",
+      "upstreams": [
+        {
+          "endpoint": "https://ai-proxy.lab.epam.com/openai/deployments/gpt-4.1-nano-2025-04-14/chat/completions",
+          "key": "{YOUR_DIAL_API_KEY}"
+        }
+      ]
+    },
     "claude-sonnet-3-7": {
       "displayName": "Claude Sonnet 3.7",
       "endpoint": "http://adapter-dial:5000/openai/deployments/claude-3-7-sonnet/chat/completions",

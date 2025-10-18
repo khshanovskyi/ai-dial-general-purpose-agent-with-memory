@@ -11,23 +11,21 @@ from task.tools.files.file_content_extraction_tool import FileContentExtractionT
 from task.tools.mcp.mcp_client import MCPClient
 from task.tools.mcp.mcp_tool import MCPTool
 from task.tools.memory.memory_delete_tool import DeleteMemoryTool
-from task.tools.memory.memory_search_tool import SearchMemoryTool
-from task.tools.memory.memory_store import LongTermMemoryStore
-from task.tools.memory.memory_store_tool import StoreMemoryTool
+from task.tools.memory.memory_service import LongTermMemoryService
 from task.tools.py_interpreter.python_code_interpreter_tool import PythonCodeInterpreterTool
 from task.tools.rag.document_cache import DocumentCache
 from task.tools.rag.rag_tool import RagTool
 
 DIAL_ENDPOINT = os.getenv('DIAL_ENDPOINT', "http://localhost:8080")
 DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'gpt-4o')
-# DEPLOYMENT_NAME = os.getenv('DEPLOYMENT_NAME', 'claude-sonnet-3-7')
+MEMORY_MODEL = os.getenv('MEMORY_MODEL', 'gpt-4.1-nano')
 
 
 class GeneralPurposeAgentApplication(ChatCompletion):
 
     def __init__(self):
         self.tools: list[BaseTool] = []
-        self.memory_store = LongTermMemoryStore(endpoint=DIAL_ENDPOINT)
+        self.memory_store = LongTermMemoryService(endpoint=DIAL_ENDPOINT, deployment_name=MEMORY_MODEL)
 
     async def _get_mcp_tools(self, url: str) -> list[BaseTool]:
         try:
@@ -59,9 +57,6 @@ class GeneralPurposeAgentApplication(ChatCompletion):
                 tool_name="execute_code",
                 dial_endpoint=DIAL_ENDPOINT
             ),
-
-            StoreMemoryTool(memory_store=self.memory_store),
-            SearchMemoryTool(memory_store=self.memory_store),
             DeleteMemoryTool(memory_store=self.memory_store),
         ]
 
@@ -78,7 +73,8 @@ class GeneralPurposeAgentApplication(ChatCompletion):
             await GeneralPurposeAgent(
                 endpoint=DIAL_ENDPOINT,
                 system_prompt=SYSTEM_PROMPT,
-                tools=self.tools
+                tools=self.tools,
+                memory_service=self.memory_store,
             ).handle_request(
                 choice=choice,
                 deployment_name=DEPLOYMENT_NAME,

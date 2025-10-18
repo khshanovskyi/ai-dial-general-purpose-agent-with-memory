@@ -1,7 +1,7 @@
 from typing import Any
 
 from task.tools.base import BaseTool
-from task.tools.memory.memory_store import LongTermMemoryStore
+from task.tools.memory.memory_service import LongTermMemoryService
 from task.tools.models import ToolCallParams
 
 
@@ -13,7 +13,7 @@ class DeleteMemoryTool(BaseTool):
     Use with caution - this action cannot be undone.
     """
 
-    def __init__(self, memory_store: LongTermMemoryStore):
+    def __init__(self, memory_store: LongTermMemoryService):
         self.memory_store = memory_store
 
     @property
