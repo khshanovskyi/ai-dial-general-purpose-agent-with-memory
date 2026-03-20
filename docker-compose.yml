@@ -1,14 +1,19 @@
+# Apple Silicon: EPAM images are often amd64-only; force platform so pulls succeed.
+x-platform-amd64: &platform-amd64
+  platform: linux/amd64
+
 services:
   themes:
+    <<: *platform-amd64
     image: epam/ai-dial-chat-themes:development
     ports:
       - "3001:8080"
 
   chat:
+    <<: *platform-amd64
     ports:
       - "3000:3000"
     image: epam/ai-dial-chat:development
-    platform: linux/amd64
     depends_on:
       - themes
       - core
@@ -21,6 +26,7 @@ services:
       KEEP_ALIVE_TIMEOUT: ${CHAT_KEEP_ALIVE_TIMEOUT:-20000}
 
   redis:
+    <<: *platform-amd64
     image: redis:7.2.4-alpine3.19
     restart: always
     ports:
@@ -35,6 +41,7 @@ services:
     mem_limit: 2200M
 
   core:
+    <<: *platform-amd64
     user: ${UID:-root}
     ports:
       - "8080:8080"
@@ -57,12 +64,14 @@ services:
 
 
   adapter-dial:
+    <<: *platform-amd64
     image: epam/ai-dial-adapter-dial:development
     environment:
       DIAL_URL: "http://core:8080"
       LOG_LEVEL: "INFO"
 
   python-interpreter:
+    <<: *platform-amd64
     image: khshanovskyi/python-code-interpreter-mcp-server:latest
     ports:
       - "8050:8000"
@@ -73,6 +82,7 @@ services:
     cpus: 2.0
 
   ddg-search:
+    <<: *platform-amd64
     image: khshanovskyi/ddg-mcp-server:latest
     ports:
       - "8051:8000"

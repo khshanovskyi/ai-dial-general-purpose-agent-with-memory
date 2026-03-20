@@ -1,4 +1,11 @@
 import os
+import sys
+from pathlib import Path
+
+# `python task/app.py` puts `task/` on sys.path, not the repo root — add root so `import task` works.
+_root = Path(__file__).resolve().parent.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
 
 from aidial_sdk import DIALApp
 from aidial_sdk.chat_completion import ChatCompletion, Request, Response
@@ -60,8 +67,9 @@ class GeneralPurposeAgentApplication(ChatCompletion):
                 dial_endpoint=DIAL_ENDPOINT
             ),
 
-            #TODO:
-            # Add tools with Long-term memory capabilities
+            StoreMemoryTool(self.memory_store),
+            SearchMemoryTool(self.memory_store),
+            DeleteMemoryTool(self.memory_store),
         ]
 
         tools.extend(await self._get_mcp_tools("http://localhost:8051/mcp"))
